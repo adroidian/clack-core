@@ -9,6 +9,7 @@ import {
   type AuthenticationHandler,
   type HttpHeaders,
 } from "@a2a-js/sdk/client";
+import { GrpcTransportFactory } from "@a2a-js/sdk/client/grpc";
 import type { MessageSendParams, Message } from "@a2a-js/sdk";
 
 import type { OutboundSendResult, PeerConfig } from "./types.js";
@@ -61,6 +62,7 @@ export class A2AClient {
       transports: [
         new JsonRpcTransportFactory({ fetchImpl: authFetch }),
         new RestTransportFactory({ fetchImpl: authFetch }),
+        new GrpcTransportFactory(),
       ],
     });
 
@@ -119,7 +121,18 @@ export class A2AClient {
         },
       };
 
-      const result = await client.sendMessage(sendParams);
+      const serviceParameters: Record<string, string> = {};
+      if (peer.auth?.token) {
+        if (peer.auth.type === "bearer") {
+          serviceParameters.authorization = `Bearer ${peer.auth.token}`;
+        } else {
+          serviceParameters["x-api-key"] = peer.auth.token;
+        }
+      }
+
+      const result = await client.sendMessage(sendParams, {
+        serviceParameters: Object.keys(serviceParameters).length ? serviceParameters : undefined,
+      });
 
       return {
         ok: true,

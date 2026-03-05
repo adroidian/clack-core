@@ -35,6 +35,11 @@ export function buildAgentCard(config: GatewayConfig): AgentCard {
     security.push({ bearer: [] });
   }
 
+  const grpcPort = config.server.port + 1;
+  const grpcHost = config.server.host === "0.0.0.0"
+    ? (configuredUrl ? new URL(configuredUrl).hostname : "localhost")
+    : config.server.host;
+
   return {
     protocolVersion: "0.3.0",
     version: "1.0.0",
@@ -52,5 +57,10 @@ export function buildAgentCard(config: GatewayConfig): AgentCard {
     supportsAuthenticatedExtendedCard: false,
     defaultInputModes: ["text"],
     defaultOutputModes: ["text"],
+    additionalInterfaces: [
+      { url: configuredUrl || fallbackUrl, transport: "JSONRPC" },
+      { url: `${new URL(configuredUrl || fallbackUrl).origin}/a2a/rest`, transport: "HTTP+JSON" },
+      { url: `${grpcHost}:${grpcPort}`, transport: "GRPC" },
+    ],
   };
 }

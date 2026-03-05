@@ -1,8 +1,9 @@
 /**
  * A2A Gateway plugin endpoints:
- * - /.well-known/agent.json
- * - /a2a/jsonrpc
- * - /a2a/rest
+ * - /.well-known/agent.json  (Agent Card discovery)
+ * - /a2a/jsonrpc              (JSON-RPC transport)
+ * - /a2a/rest                 (REST transport)
+ * - gRPC on port+1            (gRPC transport)
  */
 
 import type { Server } from "node:http";
@@ -10,6 +11,8 @@ import type { Server } from "node:http";
 import { AGENT_CARD_PATH } from "@a2a-js/sdk";
 import { DefaultRequestHandler, InMemoryTaskStore } from "@a2a-js/sdk/server";
 import { UserBuilder, agentCardHandler, jsonRpcHandler, restHandler } from "@a2a-js/sdk/server/express";
+import { grpcService, A2AService, UserBuilder as GrpcUserBuilder } from "@a2a-js/sdk/server/grpc";
+import { Server as GrpcServer, ServerCredentials, status as GrpcStatus } from "@grpc/grpc-js";
 import express from "express";
 
 import { buildAgentCard } from "./src/agent-card.js";
@@ -209,6 +212,8 @@ const plugin = {
     );
 
     let server: Server | null = null;
+    let grpcServer: GrpcServer | null = null;
+    const grpcPort = config.server.port + 1;
 
     api.registerGatewayMethod("a2a.send", ({ params, respond }) => {
       const payload = asObject(params);
@@ -255,18 +260,80 @@ const plugin = {
           return;
         }
 
+        // Start HTTP server (JSON-RPC + REST)
         await new Promise<void>((resolve, reject) => {
           server = app.listen(config.server.port, config.server.host, () => {
             api.logger.info(
-              `a2a-gateway: listening on ${config.server.host}:${config.server.port}`
+              `a2a-gateway: HTTP listening on ${config.server.host}:${config.server.port}`
             );
             resolve();
           });
 
           server!.once("error", reject);
         });
+
+        // Start gRPC server
+        try {
+          grpcServer = new GrpcServer();
+          const grpcUserBuilder = async (
+            call: { metadata?: { get: (key: string) => unknown[] } } | unknown,
+          ) => {
+            if (config.security.inboundAuth === "bearer" && config.security.token) {
+              const meta = (call as any)?.metadata;
+              const values = meta?.get?.("authorization") || meta?.get?.("Authorization") || [];
+              const header = Array.isArray(values) && values.length > 0 ? String(values[0]) : "";
+              const expected = `Bearer ${config.security.token}`;
+              if (!header || header !== expected) {
+                const err: any = new Error("Unauthorized: invalid or missing bearer token");
+                err.code = GrpcStatus.UNAUTHENTICATED;
+                throw err;
+              }
+            }
+            return GrpcUserBuilder.noAuthentication();
+          };
+
+          grpcServer.addService(
+            A2AService,
+            grpcService({ requestHandler, userBuilder: grpcUserBuilder as any })
+          );
+
+          await new Promise<void>((resolve, reject) => {
+            grpcServer!.bindAsync(
+              `${config.server.host}:${grpcPort}`,
+              ServerCredentials.createInsecure(),
+              (error) => {
+                if (error) {
+                  api.logger.warn(`a2a-gateway: gRPC failed to start: ${error.message}`);
+                  grpcServer = null;
+                  resolve(); // Non-fatal: HTTP still works
+                  return;
+                }
+                try {
+                  grpcServer!.start();
+                } catch {
+                  // ignore: some grpc-js versions auto-start
+                }
+                api.logger.info(
+                  `a2a-gateway: gRPC listening on ${config.server.host}:${grpcPort}`
+                );
+                resolve();
+              }
+            );
+          });
+        } catch (grpcError: unknown) {
+          const msg = grpcError instanceof Error ? grpcError.message : String(grpcError);
+          api.logger.warn(`a2a-gateway: gRPC init failed: ${msg}`);
+          grpcServer = null;
+        }
       },
       async stop() {
+        // Stop gRPC server
+        if (grpcServer) {
+          grpcServer.forceShutdown();
+          grpcServer = null;
+        }
+
+        // Stop HTTP server
         if (!server) {
           return;
         }

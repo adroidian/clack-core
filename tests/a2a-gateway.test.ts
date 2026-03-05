@@ -365,7 +365,8 @@ describe("a2a-gateway plugin", () => {
           JSON.stringify({
             protocolVersion: "0.3.0",
             name: "Peer Agent",
-            url: "http://mock-peer/.well-known/agent.json",
+            // Per A2A spec, the Agent Card `url` field is the service endpoint.
+            url: "http://mock-peer/a2a/jsonrpc",
             skills: [],
           }),
           {
