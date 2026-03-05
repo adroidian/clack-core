@@ -1,212 +1,379 @@
 # OpenClaw A2A Gateway Plugin
 
-An [OpenClaw](https://github.com/openclaw/openclaw) plugin that implements the [A2A (Agent-to-Agent) protocol v0.3.0](https://google.github.io/A2A/) — enabling your OpenClaw agents to communicate with any A2A-compatible agent platform.
+An [OpenClaw](https://github.com/openclaw/openclaw) plugin that implements the [A2A (Agent-to-Agent) v0.3.0 protocol](https://github.com/google/A2A), enabling OpenClaw agents to communicate with each other across different servers.
 
-## Features
+## What It Does
 
-- **A2A v0.3.0 Compliant** — Full protocol surface: Agent Card discovery, JSON-RPC 2.0, and REST endpoints
-- **Bidirectional Communication** — Receive inbound A2A requests *and* send outbound messages to peer agents
-- **Gateway RPC Dispatch** — Routes A2A messages to OpenClaw agents via the gateway's internal WebSocket API with automatic session resolution
-- **Legacy Fallback** — Falls back to `dispatchToAgent` bridge or `/hooks/wake` when gateway RPC is unavailable
-- **Bearer Token Auth** — Optional inbound authentication with configurable bearer tokens
-- **Peer Management** — Configure multiple remote A2A peers with independent auth (Bearer or API Key)
-- **In-Memory Task Store** — Tracks task lifecycle (working → completed/canceled) per the A2A spec
-- **Internal Gateway Extensions** — Custom reliability layer with HMAC-SHA256 signing, outbox pattern, idempotency, and message routing for gateway-to-gateway mesh
+- Exposes an **A2A-compliant endpoint** (JSON-RPC + REST) so other agents can send messages to your OpenClaw agent
+- Publishes an **Agent Card** at `/.well-known/agent.json` for peer discovery
+- Supports **bearer token authentication** for secure inter-agent communication
+- Routes inbound A2A messages to your OpenClaw agent and returns the response
+- Allows your agent to **call peer agents** via the A2A protocol
 
 ## Architecture
 
 ```
-                          ┌─────────────────────────────────┐
-   External A2A Agent ──▶ │  /.well-known/agent.json        │
-                          │  /a2a/jsonrpc  (JSON-RPC 2.0)   │
-                          │  /a2a/rest     (REST)            │
-                          │                                  │
-                          │  ┌───────────────────────────┐   │
-                          │  │  OpenClawAgentExecutor     │   │
-                          │  │  ┌─────────────────────┐   │   │
-                          │  │  │ Gateway RPC (WS)    │◀──┼───┼── OpenClaw Gateway
-                          │  │  │ Legacy Bridge       │   │   │
-                          │  │  │ /hooks/wake fallback│   │   │
-                          │  │  └─────────────────────┘   │   │
-                          │  └───────────────────────────┘   │
-                          │                                  │
-   OpenClaw Agent ───────▶│  a2a.send (Gateway Method)      │──▶ Remote A2A Peer
-                          └─────────────────────────────────┘
+┌──────────────────────┐         A2A/JSON-RPC          ┌──────────────────────┐
+│    OpenClaw Server A  │ ◄──────────────────────────► │    OpenClaw Server B  │
+│                       │      (Tailscale / LAN)       │                       │
+│  Agent: AGI           │                               │  Agent: Coco          │
+│  A2A Port: 18800      │                               │  A2A Port: 18800      │
+│  Peer: Server-B       │                               │  Peer: Server-A       │
+└──────────────────────┘                               └──────────────────────┘
 ```
+
+## Prerequisites
+
+- **OpenClaw** ≥ 2026.3.0 installed and running
+- **Network connectivity** between servers (Tailscale, LAN, or public IP)
+- **Node.js** ≥ 22
 
 ## Installation
 
-### 1. Copy the plugin into your OpenClaw workspace
+### 1. Clone the plugin
 
 ```bash
-# From your OpenClaw workspace root
-cp -r /path/to/a2a-gateway plugins/a2a-gateway
-cd plugins/a2a-gateway
-npm install
+# Into your workspace plugins directory
+mkdir -p ~/.openclaw/workspace/plugins
+cd ~/.openclaw/workspace/plugins
+git clone https://github.com/win4r/openclaw-a2a-gateway.git a2a-gateway
+cd a2a-gateway
+npm install --production
 ```
 
-### 2. Register in OpenClaw config
-
-Add the plugin to your `gateway.yaml` or use the CLI:
+### 2. Register the plugin in OpenClaw
 
 ```bash
-openclaw gateway config.patch '{
-  "plugins": {
-    "a2a-gateway": {
-      "enabled": true,
-      "config": {
-        "agentCard": {
-          "name": "My OpenClaw Agent",
-          "description": "An AI assistant powered by OpenClaw",
-          "url": "https://your-domain.com/.well-known/agent.json",
-          "skills": [
-            {
-              "id": "chat",
-              "name": "General Chat",
-              "description": "Natural language conversation"
-            }
-          ]
-        },
-        "server": {
-          "host": "0.0.0.0",
-          "port": 18800
-        },
-        "security": {
-          "inboundAuth": "bearer",
-          "token": "your-secret-token"
-        },
-        "routing": {
-          "defaultAgentId": "main"
-        }
-      }
-    }
-  }
-}'
+# Add to allowed plugins list
+openclaw config set plugins.allow '["telegram", "a2a-gateway"]'
+
+# Tell OpenClaw where to find the plugin
+openclaw config set plugins.load.paths '["<FULL_PATH_TO>/plugins/a2a-gateway"]'
+
+# Enable the plugin
+openclaw config set plugins.entries.a2a-gateway.enabled true
 ```
 
-### 3. Restart the gateway
+> **Note:** Replace `<FULL_PATH_TO>` with the actual absolute path, e.g., `/home/ubuntu/.openclaw/workspace/plugins/a2a-gateway`. Keep any existing plugins in the `plugins.allow` array.
+
+### 3. Configure the Agent Card
+
+Every A2A agent needs an Agent Card that describes itself:
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name 'My Agent'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.description 'My OpenClaw A2A Agent'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://<YOUR_IP>:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"Bridge chat/messages to OpenClaw agents"}]'
+```
+
+> **Important:** Replace `<YOUR_IP>` with the IP address reachable by your peers (Tailscale IP, LAN IP, or public IP).
+
+### 4. Configure the A2A server
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+```
+
+### 5. Configure security (recommended)
+
+Generate a token for inbound authentication:
+
+```bash
+TOKEN=$(openssl rand -hex 24)
+echo "Your A2A token: $TOKEN"
+
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$TOKEN"
+```
+
+> Save this token — peers will need it to authenticate with your agent.
+
+### 6. Configure agent routing
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+```
+
+### 7. Restart the gateway
 
 ```bash
 openclaw gateway restart
 ```
 
-## Configuration
+### 8. Verify
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `agentCard.name` | `string` | *required* | Display name in the A2A Agent Card |
-| `agentCard.description` | `string` | `"A2A bridge for OpenClaw agents"` | Agent description |
-| `agentCard.url` | `string` | auto-generated | Public URL for the Agent Card endpoint |
-| `agentCard.skills` | `array` | *required* | List of skills (string or `{id, name, description}`) |
-| `server.host` | `string` | `"0.0.0.0"` | Bind address for the HTTP server |
-| `server.port` | `number` | `18800` | Port for the A2A HTTP server |
-| `peers` | `array` | `[]` | Remote A2A agent peers (see below) |
-| `security.inboundAuth` | `"none" \| "bearer"` | `"none"` | Inbound authentication method |
-| `security.token` | `string` | `""` | Bearer token for inbound requests |
-| `routing.defaultAgentId` | `string` | `"default"` | OpenClaw agent to route inbound messages to |
-
-### Peer Configuration
-
-Each peer in the `peers` array:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `string` | Unique peer identifier (used in `a2a.send`) |
-| `agentCardUrl` | `string` | URL to the peer's Agent Card |
-| `auth.type` | `"bearer" \| "apiKey"` | Authentication method for outbound requests |
-| `auth.token` | `string` | Auth token/key |
-
-**Example with peers:**
-
-```json
-{
-  "peers": [
-    {
-      "name": "research-agent",
-      "agentCardUrl": "https://research.example.com/.well-known/agent.json",
-      "auth": {
-        "type": "bearer",
-        "token": "peer-secret-token"
-      }
-    }
-  ]
-}
+```bash
+# Check the Agent Card is accessible
+curl -s http://localhost:18800/.well-known/agent.json | python3 -m json.tool
 ```
+
+You should see your Agent Card with name, skills, and URL.
+
+## Adding Peers
+
+To communicate with another A2A agent, add it as a peer:
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.peers '[
+  {
+    "name": "PeerName",
+    "agentCardUrl": "http://<PEER_IP>:18800/.well-known/agent.json",
+    "auth": {
+      "type": "bearer",
+      "token": "<PEER_TOKEN>"
+    }
+  }
+]'
+```
+
+Then restart:
+
+```bash
+openclaw gateway restart
+```
+
+### Mutual Peering (Both Directions)
+
+For two-way communication, **both servers** need to add each other as peers:
+
+| Server A | Server B |
+|----------|----------|
+| Peer: Server-B (with B's token) | Peer: Server-A (with A's token) |
+
+Each server generates its own security token and shares it with the other.
+
+## Sending Messages via A2A
+
+### From the command line (curl)
+
+```bash
+curl -s -X POST http://<PEER_IP>:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <PEER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg-'$(date +%s)'",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "Hello from Server A!"}]
+      }
+    },
+    "id": "1"
+  }'
+```
+
+### From your OpenClaw agent
+
+Add this to your agent's `TOOLS.md` so it knows how to call peers:
+
+```markdown
+## A2A Gateway (Agent-to-Agent Communication)
+
+You have an A2A Gateway plugin running on port 18800.
+
+### Peers
+
+| Peer | IP | A2A Endpoint | Auth Token |
+|------|-----|--------------|------------|
+| PeerName | <PEER_IP> | http://<PEER_IP>:18800/a2a/jsonrpc | <PEER_TOKEN> |
+
+### How to send a message to a peer
+
+Use the exec tool to run:
+
+\```bash
+curl -s -X POST http://<PEER_IP>:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <PEER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg-<unique-id>",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "YOUR MESSAGE HERE"}]
+      }
+    },
+    "id": "1"
+  }'
+\```
+
+### Parsing the response
+
+The peer agent's reply is at: `result.status.message.parts[0].text`
+```
+
+Then users can say things like:
+- "Send to PeerName: what's your status?"
+- "Ask PeerName to run a health check"
+
+## Network Setup
+
+### Option A: Tailscale (Recommended)
+
+[Tailscale](https://tailscale.com/) creates a secure mesh network between your servers with zero firewall configuration.
+
+```bash
+# Install on both servers
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Authenticate (same account on both)
+sudo tailscale up
+
+# Check connectivity
+tailscale status
+# You'll see IPs like 100.x.x.x for each machine
+
+# Verify
+ping <OTHER_SERVER_TAILSCALE_IP>
+```
+
+Use the `100.x.x.x` Tailscale IPs in your A2A configuration. Traffic is encrypted end-to-end.
+
+### Option B: LAN
+
+If both servers are on the same local network, use their LAN IPs directly. Make sure port 18800 is accessible.
+
+### Option C: Public IP
+
+Use public IPs with bearer token authentication. Consider adding firewall rules to restrict access to known IPs.
+
+## Full Example: Two-Server Setup
+
+### Server A setup
+
+```bash
+# Generate Server A's token
+A_TOKEN=$(openssl rand -hex 24)
+echo "Server A token: $A_TOKEN"
+
+# Configure A2A
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name 'Server-A'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://100.10.10.1:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"Chat bridge"}]'
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$A_TOKEN"
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+
+# Add Server B as peer (use B's token)
+openclaw config set plugins.entries.a2a-gateway.config.peers '[{"name":"Server-B","agentCardUrl":"http://100.10.10.2:18800/.well-known/agent.json","auth":{"type":"bearer","token":"<B_TOKEN>"}}]'
+
+openclaw gateway restart
+```
+
+### Server B setup
+
+```bash
+# Generate Server B's token
+B_TOKEN=$(openssl rand -hex 24)
+echo "Server B token: $B_TOKEN"
+
+# Configure A2A
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name 'Server-B'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://100.10.10.2:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"Chat bridge"}]'
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$B_TOKEN"
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+
+# Add Server A as peer (use A's token)
+openclaw config set plugins.entries.a2a-gateway.config.peers '[{"name":"Server-A","agentCardUrl":"http://100.10.10.1:18800/.well-known/agent.json","auth":{"type":"bearer","token":"<A_TOKEN>"}}]'
+
+openclaw gateway restart
+```
+
+### Verify both directions
+
+```bash
+# From Server A → test Server B
+curl -s http://100.10.10.2:18800/.well-known/agent.json
+
+# From Server B → test Server A
+curl -s http://100.10.10.1:18800/.well-known/agent.json
+
+# Send a message A → B
+curl -s -X POST http://100.10.10.2:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <B_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"message/send","params":{"message":{"messageId":"test-1","role":"user","parts":[{"kind":"text","text":"Hello from Server A!"}]}},"id":"1"}'
+```
+
+## Configuration Reference
+
+| Path | Type | Default | Description |
+|------|------|---------|-------------|
+| `agentCard.name` | string | *required* | Display name for this agent |
+| `agentCard.description` | string | — | Human-readable description |
+| `agentCard.url` | string | auto | JSON-RPC endpoint URL |
+| `agentCard.skills` | array | *required* | List of skills this agent offers |
+| `server.host` | string | `0.0.0.0` | Bind address |
+| `server.port` | number | `18800` | A2A server port |
+| `peers` | array | `[]` | List of peer agents |
+| `peers[].name` | string | *required* | Peer display name |
+| `peers[].agentCardUrl` | string | *required* | URL to peer's Agent Card |
+| `peers[].auth.type` | string | — | `bearer` or `apiKey` |
+| `peers[].auth.token` | string | — | Authentication token |
+| `security.inboundAuth` | string | `none` | `none` or `bearer` |
+| `security.token` | string | — | Token for inbound auth |
+| `routing.defaultAgentId` | string | `default` | Agent ID for inbound messages |
 
 ## Endpoints
 
-Once running, the plugin exposes:
-
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/.well-known/agent.json` | GET | A2A Agent Card (auto-discovery) |
-| `/a2a/jsonrpc` | POST | JSON-RPC 2.0 endpoint (`message/send`, etc.) |
-| `/a2a/rest` | POST | REST-style endpoint |
+| `/.well-known/agent.json` | GET | Agent Card (discovery) |
+| `/a2a/jsonrpc` | POST | A2A JSON-RPC (message/send) |
 
-## Sending Messages to Peers
+## Troubleshooting
 
-From any OpenClaw agent session, use the gateway method:
+### "Request accepted (no agent dispatch available)"
 
-```
-a2a.send({ peer: "research-agent", message: { text: "Summarize recent papers on LLMs" } })
-```
-
-The client will:
-1. Fetch the peer's Agent Card to discover its service URL
-2. Send a JSON-RPC `message/send` request with proper auth headers
-3. Return the response
-
-## Agent Dispatch Flow
-
-When an inbound A2A message arrives:
-
-1. **Gateway RPC (preferred)** — Connects to OpenClaw gateway via WebSocket, resolves the target agent session, and dispatches the message. Waits for the agent's response and returns it as a completed A2A task.
-
-2. **Legacy Bridge (fallback)** — If gateway RPC fails, falls back to `dispatchToAgent` API.
-
-3. **Hooks Wake (last resort)** — If all else fails, sends a wake event to `/hooks/wake` so the agent can process the message asynchronously.
-
-## Internal Modules
-
-The `src/internal/` directory contains gateway-to-gateway extensions that go beyond the A2A spec:
-
-| Module | Purpose |
-|--------|---------|
-| `envelope.ts` | Custom `a2a/v1` envelope format with TTL, hop-count, and loop detection |
-| `transport.ts` | HTTP transport layer with `/a2a/v1/inbox` endpoint |
-| `security.ts` | HMAC-SHA256 signing, nonce cache, and peer registry |
-| `routing.ts` | Route-key and agent-id based message routing |
-| `outbox.ts` | Reliable at-least-once delivery with exponential backoff |
-| `idempotency.ts` | SHA-256 payload fingerprinting and deduplication |
-| `metrics.ts` | Protocol metrics and structured logging |
-
-## Testing
+Your OpenClaw agent has no AI provider configured. Run:
 
 ```bash
-npm test
+openclaw config get auth.profiles
 ```
 
-Runs the test suite with Node.js built-in test runner (`node:test`). Tests cover:
-- Agent Card generation with A2A v0.3.0 fields
-- Gateway RPC dispatch (preferred path)
-- Legacy bridge fallback
-- Task cancellation lifecycle
-- Outbound peer messaging via `a2a.send`
+Make sure at least one auth profile is set up (e.g., `openai-codex`, `anthropic`, etc.).
 
-## Tech Stack
+### Agent Card returns 404
 
-- **Runtime:** Node.js (ESM)
-- **A2A SDK:** `@a2a-js/sdk` v0.3.0
-- **HTTP:** Express 4
-- **Language:** TypeScript 5
-- **Testing:** `node:test` + `supertest`
+The plugin isn't loaded. Check:
+
+```bash
+# Verify plugin is in allow list
+openclaw config get plugins.allow
+
+# Verify load path is correct
+openclaw config get plugins.load.paths
+
+# Check gateway logs
+cat /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep a2a
+```
+
+### Connection refused on port 18800
+
+```bash
+# Check if the A2A server is listening
+ss -tlnp | grep 18800
+
+# If not, restart gateway
+openclaw gateway restart
+```
+
+### Peer authentication fails
+
+Make sure the token in your peer config matches the `security.token` on the target server exactly.
 
 ## License
 
 MIT
-
-## Links
-
-- [A2A Protocol Specification](https://google.github.io/A2A/)
-- [OpenClaw Documentation](https://docs.openclaw.ai)
-- [@a2a-js/sdk](https://www.npmjs.com/package/@a2a-js/sdk)

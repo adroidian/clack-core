@@ -1,212 +1,379 @@
 # OpenClaw A2A Gateway 插件
 
-[OpenClaw](https://github.com/openclaw/openclaw) 的 [A2A（Agent-to-Agent）协议 v0.3.0](https://google.github.io/A2A/) 网关插件 —— 让你的 OpenClaw 智能体与任何兼容 A2A 协议的平台互联互通。
+[OpenClaw](https://github.com/openclaw/openclaw) 插件，实现 [A2A (Agent-to-Agent) v0.3.0 协议](https://github.com/google/A2A)，让不同服务器上的 OpenClaw Agent 互相通信。
 
-## 功能特性
+## 功能
 
-- **完整实现 A2A v0.3.0 协议** — Agent Card 自动发现、JSON-RPC 2.0 和 REST 端点全覆盖
-- **双向通信** — 既能接收外部 A2A 请求，也能主动向对等智能体发送消息
-- **Gateway RPC 调度** — 通过网关内部 WebSocket API 将 A2A 消息路由到 OpenClaw 智能体，自动解析会话
-- **多层降级方案** — Gateway RPC 不可用时，自动降级到 `dispatchToAgent` 桥接或 `/hooks/wake`
-- **Bearer Token 认证** — 可选的入站请求认证
-- **对等节点管理** — 配置多个远程 A2A 对等智能体，支持独立的 Bearer/API Key 认证
-- **内存任务存储** — 按照 A2A 规范跟踪任务生命周期（working → completed/canceled）
-- **网关内部扩展** — 自定义可靠性层，包括 HMAC-SHA256 签名、发件箱模式、幂等性处理和消息路由
+- 暴露 **A2A 标准端点**（JSON-RPC + REST），其他 Agent 可以发消息给你的 Agent
+- 在 `/.well-known/agent.json` 发布 **Agent Card**，支持对等发现
+- 支持 **Bearer Token 认证**，确保安全的跨 Agent 通信
+- 将入站 A2A 消息路由到你的 OpenClaw Agent 并返回响应
+- 你的 Agent 也可以 **主动调用对等 Agent**
 
-## 架构概览
+## 架构
 
 ```
-                          ┌─────────────────────────────────┐
-   外部 A2A 智能体 ──────▶ │  /.well-known/agent.json        │
-                          │  /a2a/jsonrpc  (JSON-RPC 2.0)   │
-                          │  /a2a/rest     (REST)            │
-                          │                                  │
-                          │  ┌───────────────────────────┐   │
-                          │  │  OpenClawAgentExecutor     │   │
-                          │  │  ┌─────────────────────┐   │   │
-                          │  │  │ Gateway RPC (WS)    │◀──┼───┼── OpenClaw 网关
-                          │  │  │ Legacy 桥接          │   │   │
-                          │  │  │ /hooks/wake 降级     │   │   │
-                          │  │  └─────────────────────┘   │   │
-                          │  └───────────────────────────┘   │
-                          │                                  │
-   OpenClaw 智能体 ───────▶│  a2a.send（网关方法）            │──▶ 远程 A2A 对等节点
-                          └─────────────────────────────────┘
+┌──────────────────────┐         A2A/JSON-RPC          ┌──────────────────────┐
+│    OpenClaw 服务器 A   │ ◄──────────────────────────► │    OpenClaw 服务器 B   │
+│                       │      (Tailscale / 内网)       │                       │
+│  Agent: AGI           │                               │  Agent: Coco          │
+│  A2A 端口: 18800       │                               │  A2A 端口: 18800       │
+│  Peer: Server-B       │                               │  Peer: Server-A       │
+└──────────────────────┘                               └──────────────────────┘
 ```
 
-## 安装
+## 前提条件
 
-### 1. 将插件复制到 OpenClaw 工作区
+- **OpenClaw** ≥ 2026.3.0 已安装并运行
+- 服务器之间有 **网络连通性**（Tailscale、局域网或公网 IP）
+- **Node.js** ≥ 22
+
+## 安装步骤
+
+### 1. 克隆插件
 
 ```bash
-# 从 OpenClaw 工作区根目录
-cp -r /path/to/a2a-gateway plugins/a2a-gateway
-cd plugins/a2a-gateway
-npm install
+# 放到 workspace 的 plugins 目录
+mkdir -p ~/.openclaw/workspace/plugins
+cd ~/.openclaw/workspace/plugins
+git clone https://github.com/win4r/openclaw-a2a-gateway.git a2a-gateway
+cd a2a-gateway
+npm install --production
 ```
 
-### 2. 在 OpenClaw 配置中注册
-
-通过 CLI 添加插件配置：
+### 2. 在 OpenClaw 中注册插件
 
 ```bash
-openclaw gateway config.patch '{
-  "plugins": {
-    "a2a-gateway": {
-      "enabled": true,
-      "config": {
-        "agentCard": {
-          "name": "我的 OpenClaw 智能体",
-          "description": "基于 OpenClaw 的 AI 助手",
-          "url": "https://your-domain.com/.well-known/agent.json",
-          "skills": [
-            {
-              "id": "chat",
-              "name": "通用对话",
-              "description": "自然语言对话能力"
-            }
-          ]
-        },
-        "server": {
-          "host": "0.0.0.0",
-          "port": 18800
-        },
-        "security": {
-          "inboundAuth": "bearer",
-          "token": "your-secret-token"
-        },
-        "routing": {
-          "defaultAgentId": "main"
-        }
-      }
-    }
-  }
-}'
+# 添加到允许列表
+openclaw config set plugins.allow '["telegram", "a2a-gateway"]'
+
+# 设置插件路径
+openclaw config set plugins.load.paths '["<插件绝对路径>/plugins/a2a-gateway"]'
+
+# 启用插件
+openclaw config set plugins.entries.a2a-gateway.enabled true
 ```
 
-### 3. 重启网关
+> **注意：** `<插件绝对路径>` 替换为实际路径，如 `/home/ubuntu/.openclaw/workspace/plugins/a2a-gateway`。`plugins.allow` 数组要保留已有的插件。
+
+### 3. 配置 Agent Card
+
+每个 A2A Agent 都需要一个描述自身的 Agent Card：
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name '我的Agent'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.description '我的 OpenClaw A2A Agent'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://<你的IP>:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"聊天桥接"}]'
+```
+
+> **重要：** `<你的IP>` 替换为对等方可达的 IP（Tailscale IP、内网 IP 或公网 IP）。
+
+### 4. 配置 A2A 服务器
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+```
+
+### 5. 配置安全认证（推荐）
+
+生成入站认证 Token：
+
+```bash
+TOKEN=$(openssl rand -hex 24)
+echo "你的 A2A Token: $TOKEN"
+
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$TOKEN"
+```
+
+> 保存好这个 Token —— 对等方连接你时需要用到。
+
+### 6. 配置 Agent 路由
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+```
+
+### 7. 重启网关
 
 ```bash
 openclaw gateway restart
 ```
 
-## 配置说明
+### 8. 验证
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `agentCard.name` | `string` | *必填* | A2A Agent Card 中显示的名称 |
-| `agentCard.description` | `string` | `"A2A bridge for OpenClaw agents"` | 智能体描述 |
-| `agentCard.url` | `string` | 自动生成 | Agent Card 端点的公开 URL |
-| `agentCard.skills` | `array` | *必填* | 技能列表（字符串或 `{id, name, description}` 对象） |
-| `server.host` | `string` | `"0.0.0.0"` | HTTP 服务器绑定地址 |
-| `server.port` | `number` | `18800` | A2A HTTP 服务器端口 |
-| `peers` | `array` | `[]` | 远程 A2A 对等智能体列表（详见下方） |
-| `security.inboundAuth` | `"none" \| "bearer"` | `"none"` | 入站认证方式 |
-| `security.token` | `string` | `""` | 入站请求的 Bearer Token |
-| `routing.defaultAgentId` | `string` | `"default"` | 入站消息默认路由到的 OpenClaw 智能体 |
-
-### 对等节点配置
-
-`peers` 数组中的每个对等节点：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | `string` | 唯一标识符（在 `a2a.send` 中引用） |
-| `agentCardUrl` | `string` | 对等节点的 Agent Card URL |
-| `auth.type` | `"bearer" \| "apiKey"` | 出站请求认证方式 |
-| `auth.token` | `string` | 认证令牌/密钥 |
-
-**配置示例：**
-
-```json
-{
-  "peers": [
-    {
-      "name": "research-agent",
-      "agentCardUrl": "https://research.example.com/.well-known/agent.json",
-      "auth": {
-        "type": "bearer",
-        "token": "peer-secret-token"
-      }
-    }
-  ]
-}
+```bash
+# 检查 Agent Card 是否可访问
+curl -s http://localhost:18800/.well-known/agent.json | python3 -m json.tool
 ```
 
-## API 端点
+你应该能看到包含 name、skills 和 URL 的 Agent Card。
 
-插件启动后暴露以下端点：
+## 添加对等方 (Peers)
+
+要与另一个 A2A Agent 通信，将其添加为 Peer：
+
+```bash
+openclaw config set plugins.entries.a2a-gateway.config.peers '[
+  {
+    "name": "对等方名称",
+    "agentCardUrl": "http://<对等方IP>:18800/.well-known/agent.json",
+    "auth": {
+      "type": "bearer",
+      "token": "<对等方Token>"
+    }
+  }
+]'
+```
+
+然后重启：
+
+```bash
+openclaw gateway restart
+```
+
+### 双向配对
+
+要实现双向通信，**两台服务器** 都要把对方添加为 Peer：
+
+| 服务器 A | 服务器 B |
+|----------|----------|
+| Peer: Server-B（用 B 的 Token） | Peer: Server-A（用 A 的 Token） |
+
+每台服务器生成自己的安全 Token，分享给对方。
+
+## 通过 A2A 发送消息
+
+### 命令行方式 (curl)
+
+```bash
+curl -s -X POST http://<对等方IP>:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <对等方Token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg-'$(date +%s)'",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "你好，来自服务器A！"}]
+      }
+    },
+    "id": "1"
+  }'
+```
+
+### 让你的 Agent 知道如何调用（TOOLS.md 模板）
+
+在 Agent 的 `TOOLS.md` 中添加以下内容，Agent 就能自主调用 A2A：
+
+```markdown
+## A2A Gateway（Agent 间通信）
+
+你有一个 A2A Gateway 插件运行在 18800 端口。
+
+### 对等方列表
+
+| 对等方 | IP | A2A 端点 | 认证 Token |
+|--------|-----|----------|------------|
+| PeerName | <PEER_IP> | http://<PEER_IP>:18800/a2a/jsonrpc | <PEER_TOKEN> |
+
+### 发送消息给对等方
+
+当用户说 "通过 A2A 让 PeerName 做 xxx" 或 "发给 PeerName：xxx" 时，用 exec 工具执行：
+
+\```bash
+curl -s -X POST http://<PEER_IP>:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <PEER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg-<唯一ID>",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "你的消息内容"}]
+      }
+    },
+    "id": "1"
+  }'
+\```
+
+### 解析响应
+
+对等方 Agent 的回复在：`result.status.message.parts[0].text`
+```
+
+配好后用户就可以这样说：
+- "通过 A2A 让 PeerName 查一下系统状态"
+- "发给 PeerName：你叫什么名字？"
+
+## 网络配置
+
+### 方案 A：Tailscale（推荐）
+
+[Tailscale](https://tailscale.com/) 在服务器之间创建安全的 Mesh 网络，无需防火墙配置。
+
+```bash
+# 两台服务器都装
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# 用同一个账号认证
+sudo tailscale up
+
+# 查看状态
+tailscale status
+# 你会看到每台机器的 100.x.x.x IP
+
+# 测试连通性
+ping <对方的Tailscale_IP>
+```
+
+在 A2A 配置中使用 `100.x.x.x` 的 Tailscale IP。流量端对端加密。
+
+### 方案 B：局域网
+
+两台服务器在同一局域网内，直接用内网 IP。确保 18800 端口可访问。
+
+### 方案 C：公网 IP
+
+使用公网 IP + Bearer Token 认证。建议用防火墙限制来源 IP。
+
+## 完整示例：两台服务器配对
+
+### 服务器 A 配置
+
+```bash
+# 生成 A 的 Token
+A_TOKEN=$(openssl rand -hex 24)
+echo "服务器 A Token: $A_TOKEN"
+
+# 配置 A2A
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name 'Server-A'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://100.10.10.1:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"聊天桥接"}]'
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$A_TOKEN"
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+
+# 添加 B 为 Peer（用 B 的 Token）
+openclaw config set plugins.entries.a2a-gateway.config.peers '[{"name":"Server-B","agentCardUrl":"http://100.10.10.2:18800/.well-known/agent.json","auth":{"type":"bearer","token":"<B_TOKEN>"}}]'
+
+openclaw gateway restart
+```
+
+### 服务器 B 配置
+
+```bash
+# 生成 B 的 Token
+B_TOKEN=$(openssl rand -hex 24)
+echo "服务器 B Token: $B_TOKEN"
+
+# 配置 A2A
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.name 'Server-B'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.url 'http://100.10.10.2:18800/a2a/jsonrpc'
+openclaw config set plugins.entries.a2a-gateway.config.agentCard.skills '[{"id":"chat","name":"chat","description":"聊天桥接"}]'
+openclaw config set plugins.entries.a2a-gateway.config.server.host '0.0.0.0'
+openclaw config set plugins.entries.a2a-gateway.config.server.port 18800
+openclaw config set plugins.entries.a2a-gateway.config.security.inboundAuth 'bearer'
+openclaw config set plugins.entries.a2a-gateway.config.security.token "$B_TOKEN"
+openclaw config set plugins.entries.a2a-gateway.config.routing.defaultAgentId 'main'
+
+# 添加 A 为 Peer（用 A 的 Token）
+openclaw config set plugins.entries.a2a-gateway.config.peers '[{"name":"Server-A","agentCardUrl":"http://100.10.10.1:18800/.well-known/agent.json","auth":{"type":"bearer","token":"<A_TOKEN>"}}]'
+
+openclaw gateway restart
+```
+
+### 双向验证
+
+```bash
+# 服务器 A → 测试 B
+curl -s http://100.10.10.2:18800/.well-known/agent.json
+
+# 服务器 B → 测试 A
+curl -s http://100.10.10.1:18800/.well-known/agent.json
+
+# 发消息 A → B
+curl -s -X POST http://100.10.10.2:18800/a2a/jsonrpc \
+  -H "Authorization: Bearer <B_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"message/send","params":{"message":{"messageId":"test-1","role":"user","parts":[{"kind":"text","text":"你好，来自服务器A！"}]}},"id":"1"}'
+```
+
+## 配置参考
+
+| 配置路径 | 类型 | 默认值 | 说明 |
+|---------|------|--------|------|
+| `agentCard.name` | string | *必填* | Agent 显示名称 |
+| `agentCard.description` | string | — | 人类可读的描述 |
+| `agentCard.url` | string | 自动 | JSON-RPC 端点 URL |
+| `agentCard.skills` | array | *必填* | Agent 提供的技能列表 |
+| `server.host` | string | `0.0.0.0` | 绑定地址 |
+| `server.port` | number | `18800` | A2A 服务端口 |
+| `peers` | array | `[]` | 对等 Agent 列表 |
+| `peers[].name` | string | *必填* | 对等方显示名称 |
+| `peers[].agentCardUrl` | string | *必填* | 对等方 Agent Card URL |
+| `peers[].auth.type` | string | — | `bearer` 或 `apiKey` |
+| `peers[].auth.token` | string | — | 认证 Token |
+| `security.inboundAuth` | string | `none` | `none` 或 `bearer` |
+| `security.token` | string | — | 入站认证 Token |
+| `routing.defaultAgentId` | string | `default` | 入站消息路由到的 Agent ID |
+
+## 端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/.well-known/agent.json` | GET | A2A Agent Card（自动发现） |
-| `/a2a/jsonrpc` | POST | JSON-RPC 2.0 端点（`message/send` 等） |
-| `/a2a/rest` | POST | REST 风格端点 |
+| `/.well-known/agent.json` | GET | Agent Card（发现） |
+| `/a2a/jsonrpc` | POST | A2A JSON-RPC（message/send） |
 
-## 向对等节点发送消息
+## 常见问题
 
-从任何 OpenClaw 智能体会话中，使用网关方法：
+### "Request accepted (no agent dispatch available)"
 
-```
-a2a.send({ peer: "research-agent", message: { text: "总结近期 LLM 相关论文" } })
-```
-
-客户端会依次：
-1. 获取对等节点的 Agent Card，发现其服务 URL
-2. 发送带有认证头的 JSON-RPC `message/send` 请求
-3. 返回响应结果
-
-## 智能体调度流程
-
-当收到入站 A2A 消息时：
-
-1. **Gateway RPC（首选）** — 通过 WebSocket 连接 OpenClaw 网关，解析目标智能体会话，调度消息。等待智能体响应后作为已完成的 A2A 任务返回。
-
-2. **Legacy 桥接（降级）** — Gateway RPC 失败时，降级到 `dispatchToAgent` API。
-
-3. **Hooks Wake（兜底）** — 所有方式都失败时，发送 wake 事件到 `/hooks/wake`，让智能体异步处理消息。
-
-## 内部模块
-
-`src/internal/` 目录包含超出 A2A 规范的网关间通信扩展：
-
-| 模块 | 用途 |
-|------|------|
-| `envelope.ts` | 自定义 `a2a/v1` 信封格式，支持 TTL、跳数限制和环路检测 |
-| `transport.ts` | HTTP 传输层，`/a2a/v1/inbox` 端点 |
-| `security.ts` | HMAC-SHA256 签名、Nonce 缓存和对等节点注册表 |
-| `routing.ts` | 基于 route-key 和 agent-id 的消息路由 |
-| `outbox.ts` | 可靠的至少一次投递，指数退避重试 |
-| `idempotency.ts` | SHA-256 负载指纹识别和去重 |
-| `metrics.ts` | 协议指标收集和结构化日志 |
-
-## 测试
+你的 OpenClaw Agent 没有配置 AI Provider。检查：
 
 ```bash
-npm test
+openclaw config get auth.profiles
 ```
 
-使用 Node.js 内置测试运行器（`node:test`）执行测试套件。测试覆盖：
-- Agent Card 生成（A2A v0.3.0 字段验证）
-- Gateway RPC 调度（首选路径）
-- Legacy 桥接降级
-- 任务取消生命周期
-- 通过 `a2a.send` 向对等节点发送消息
+确保至少配了一个认证 profile（如 `openai-codex`、`anthropic` 等）。
 
-## 技术栈
+### Agent Card 返回 404
 
-- **运行时:** Node.js（ESM）
-- **A2A SDK:** `@a2a-js/sdk` v0.3.0
-- **HTTP 框架:** Express 4
-- **开发语言:** TypeScript 5
-- **测试:** `node:test` + `supertest`
+插件没加载。检查：
+
+```bash
+# 确认插件在允许列表中
+openclaw config get plugins.allow
+
+# 确认加载路径正确
+openclaw config get plugins.load.paths
+
+# 查看网关日志
+cat /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep a2a
+```
+
+### 18800 端口连接被拒
+
+```bash
+# 检查 A2A 服务是否在监听
+ss -tlnp | grep 18800
+
+# 如果没有，重启网关
+openclaw gateway restart
+```
+
+### 对等方认证失败
+
+确保你的 peer 配置中的 token 和目标服务器的 `security.token` 完全一致。
 
 ## 许可证
 
 MIT
-
-## 相关链接
-
-- [A2A 协议规范](https://google.github.io/A2A/)
-- [OpenClaw 文档](https://docs.openclaw.ai)
-- [@a2a-js/sdk](https://www.npmjs.com/package/@a2a-js/sdk)
