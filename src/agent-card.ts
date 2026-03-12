@@ -52,7 +52,7 @@ export function buildAgentCard(config: GatewayConfig): AgentCard {
     url: configuredUrl || fallbackUrl,
     skills: (agentCard.skills || []).map((entry, index) => toSkill(entry, index)),
     capabilities: {
-      streaming: false,
+      streaming: true,
       pushNotifications: false,
       stateTransitionHistory: false,
     },

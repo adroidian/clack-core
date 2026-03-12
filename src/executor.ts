@@ -19,6 +19,12 @@ const HOOKS_WAKE_TIMEOUT_MS = 5_000;
 const TASK_CONTEXT_CACHE_LIMIT = 10_000;
 
 /**
+ * Interval for SSE heartbeat events during agent dispatch.
+ * Keeps the SSE connection alive and signals clients the task is still working.
+ */
+const STREAMING_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
  * Maximum number of messages retained in task history.
  * Prevents unbounded growth in long-running conversations.
  * The SDK's tasks/get historyLength param can further trim on read.
@@ -774,9 +780,26 @@ export class OpenClawAgentExecutor implements AgentExecutor {
 
     let agentResponse: AgentResponse;
 
+    // Emit periodic heartbeat events while the agent is working.
+    // This keeps SSE connections alive and signals that the task is still in progress.
+    const heartbeat = setInterval(() => {
+      const heartbeatTask: Task = {
+        kind: "task",
+        id: taskId,
+        contextId,
+        status: {
+          state: "working",
+          timestamp: new Date().toISOString(),
+        },
+        history: existingHistory,
+      };
+      eventBus.publish(heartbeatTask);
+    }, STREAMING_HEARTBEAT_INTERVAL_MS);
+
     try {
       agentResponse = await this.dispatchViaGatewayRpc(agentId, requestContext.userMessage, contextId);
     } catch (err: unknown) {
+      clearInterval(heartbeat);
       const errorMessage = err instanceof Error ? err.message : String(err);
       const truncatedError = errorMessage.length > 500 ? errorMessage.slice(0, 500) + "..." : errorMessage;
       this.api.logger.error(`a2a-gateway: agent dispatch failed: ${truncatedError}`);
@@ -807,6 +830,8 @@ export class OpenClawAgentExecutor implements AgentExecutor {
       eventBus.finished();
       return;
     }
+
+    clearInterval(heartbeat);
 
     // Publish completed Task with artifact (text + optional file parts)
     const responseParts = buildResponseParts(agentResponse);

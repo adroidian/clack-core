@@ -43,7 +43,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 
-const USAGE = `Usage: node a2a-send.mjs --peer-url <URL> --token <TOKEN> --message <TEXT> [--file-uri <url>] [--file-path <localpath>] [--task-id <id>] [--context-id <id>] [--non-blocking] [--wait] [--timeout-ms <ms>] [--poll-ms <ms>] [--agent-id <openclaw-agent-id>] [--help]`;
+const USAGE = `Usage: node a2a-send.mjs --peer-url <URL> --token <TOKEN> --message <TEXT> [--file-uri <url>] [--file-path <localpath>] [--task-id <id>] [--context-id <id>] [--non-blocking] [--wait] [--stream] [--timeout-ms <ms>] [--poll-ms <ms>] [--agent-id <openclaw-agent-id>] [--help]`;
 
 const MAX_INLINE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -145,6 +145,7 @@ async function main() {
 
   const nonBlocking = Boolean(opts["non-blocking"] || opts.nonBlocking);
   const wait = Boolean(opts.wait);
+  const stream = Boolean(opts.stream);
 
   const timeoutMsRaw = opts["timeout-ms"] || opts.timeoutMs;
   const pollMsRaw = opts["poll-ms"] || opts.pollMs;
@@ -254,6 +255,34 @@ async function main() {
     message: outboundMessage,
     ...(nonBlocking ? { configuration: { blocking: false } } : {}),
   };
+
+  // SSE streaming mode: subscribe to task event stream
+  if (stream) {
+    console.log("[stream] connecting...");
+    const eventStream = client.sendMessageStream(sendParams, requestOptions);
+    for await (const event of eventStream) {
+      const kind = event?.kind;
+      if (kind === "task") {
+        const state = event.status?.state;
+        const text = extractFirstTextParts(event.status?.message?.parts);
+        if (state === "working") {
+          console.log(`[stream] working... (${event.status?.timestamp || ""})`);
+        } else if (text) {
+          console.log(`[stream] ${state}: ${text}`);
+        } else {
+          console.log(`[stream] ${state}: ${JSON.stringify(event.status)}`);
+        }
+      } else if (kind === "status-update") {
+        const state = event.status?.state;
+        const text = extractFirstTextParts(event.status?.message?.parts);
+        console.log(`[stream] status-update: ${state}${text ? ` — ${text}` : ""}`);
+      } else {
+        console.log(`[stream] ${kind || "unknown"}: ${JSON.stringify(event)}`);
+      }
+    }
+    console.log("[stream] done");
+    return;
+  }
 
   const result = await client.sendMessage(sendParams, requestOptions);
 

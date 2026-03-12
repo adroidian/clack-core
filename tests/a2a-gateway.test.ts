@@ -319,7 +319,7 @@ describe("a2a-gateway plugin", () => {
     assert.ok(payload.security !== undefined, "security should be present");
 
     const capabilities = payload.capabilities as Record<string, unknown>;
-    assert.equal(capabilities.streaming, false);
+    assert.equal(capabilities.streaming, true);
     assert.equal(capabilities.pushNotifications, false);
     assert.equal(capabilities.stateTransitionHistory, false);
   });
