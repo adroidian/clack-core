@@ -52,3 +52,32 @@ describe("cross-platform tasksDir default (issue #25)", () => {
     assert.equal(config.storage.tasksDir, "/plugin-root/my/tasks");
   });
 });
+
+describe("cross-platform auditLogPath default", () => {
+  it("uses ~/.openclaw/a2a-audit.jsonl when no auditLogPath is configured", () => {
+    const config = parseConfig({});
+    const expected = path.join(os.homedir(), ".openclaw", "a2a-audit.jsonl");
+    assert.equal(config.observability.auditLogPath, expected);
+  });
+
+  it("respects user-configured absolute path", () => {
+    const config = parseConfig({
+      observability: { auditLogPath: "/var/log/a2a-audit.jsonl" },
+    });
+    assert.equal(config.observability.auditLogPath, "/var/log/a2a-audit.jsonl");
+  });
+
+  it("resolves user-configured relative path to absolute", () => {
+    const config = parseConfig({
+      observability: { auditLogPath: "data/audit.jsonl" },
+    });
+    assert.ok(
+      path.isAbsolute(config.observability.auditLogPath),
+      `auditLogPath should be absolute but got "${config.observability.auditLogPath}"`,
+    );
+    assert.ok(
+      config.observability.auditLogPath.endsWith("data/audit.jsonl"),
+      `should end with "data/audit.jsonl" but got "${config.observability.auditLogPath}"`,
+    );
+  });
+});

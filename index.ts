@@ -214,7 +214,11 @@ export function parseConfig(raw: unknown, resolvePath?: (nextPath: string) => st
       exposeMetricsEndpoint: asBoolean(observability.exposeMetricsEndpoint, true),
       metricsPath: normalizeHttpPath(asString(observability.metricsPath, "/a2a/metrics"), "/a2a/metrics"),
       metricsAuth: (asString(observability.metricsAuth, "none") === "bearer" ? "bearer" : "none") as "none" | "bearer",
-      auditLogPath: resolveConfiguredPath(observability.auditLogPath, "data/audit.jsonl", resolvePath),
+      auditLogPath: resolveConfiguredPath(
+        observability.auditLogPath,
+        path.join(os.homedir(), ".openclaw", "a2a-audit.jsonl"),
+        resolvePath,
+      ),
     },
     timeouts: {
       agentResponseTimeoutMs: asNumber(timeouts.agentResponseTimeoutMs, 300_000),

@@ -180,7 +180,7 @@
           },
           "auditLogPath": {
             "type": "string",
-            "default": "data/audit.jsonl",
+            "default": "~/.openclaw/a2a-audit.jsonl",
             "description": "Path for the JSONL audit log file (separate from structured logs)."
           }
         }
