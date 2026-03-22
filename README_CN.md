@@ -560,15 +560,18 @@ Agent 会自动按照 skill 的流程执行。
 - ✅ **P9** 跨平台 tasksDir 默认路径 `~/.openclaw/a2a-tasks` (direct commit)
 - ✅ **v1.0.1** Ed25519 设备身份，兼容 OpenClaw ≥2026.3.13 scope 验证 (commit 84f440c)
 - ✅ Metrics 端点可选 bearer 鉴权（`observability.metricsAuth: "bearer"`）
+- ✅ 从 Agent 文本回复中提取文件 URL 为出站 FilePart (PR #35)
+- ✅ 跨实现兼容性测试矩阵 ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)) (PR #36)
+- ✅ **P10** 自动传输降级：JSON-RPC → REST → gRPC (PR #37)
+- ✅ **P8** Push notifications：任务完成时 webhook 回调 (PR #38)
+- ✅ 规则路由：按消息 pattern/tags/skills 自动选择 peer + agentId (PR #39)
+- ✅ DNS-SD 动态 Agent 发现：SRV + TXT 记录 (PR #40)
 
 ### 待做（欢迎 PR）
 
-- 规则路由：按消息类型/标签/skill 自动选择 peer + 目标 agentId
-- DNS-based 动态 Agent 发现（mDNS/DNS-SD），替代硬编码 peer URL
-- Push notifications 支持（store + sender），超长任务异步回调
-- 自动传输降级（JSON-RPC → REST/gRPC）
-- 跨实现兼容性测试（Google reference server 等）
-- 从 Agent 文本回复中提取 URL 为出站 FilePart
+- 将 peer Agent Card 的 skills 缓存接入路由规则（skills 匹配）
+- mDNS 自广播（让本 gateway 可被其他 gateway 自动发现）
+- 对接 SDK 原生 Push Notification 流程（当前为自定义实现）
 
 ## 许可证
 

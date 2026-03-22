@@ -573,12 +573,15 @@ The agent will follow the skill's procedure automatically.
 - ✅ Extract file URLs from agent text responses (markdown links, bare URLs) into outbound FileParts — only recognized file extensions are promoted
 - ✅ Cross-implementation compatibility test matrix ([docs/COMPATIBILITY.md](docs/COMPATIBILITY.md))
 - ✅ **P10** Automatic transport fallback: JSON-RPC → REST → gRPC with retryable-error classification
+- ✅ **P8** Push notifications for long-running tasks — webhook delivery on terminal states (PR #38)
+- ✅ Rule-based routing: auto-select peer + agentId based on message pattern/tags/skills (PR #39)
+- ✅ DNS-SD dynamic agent discovery via SRV + TXT records (PR #40)
 
 ### Next
 
-- Rule-based routing: choose peer + target agentId based on message type/tags/skills
-- DNS-based dynamic agent discovery (mDNS/DNS-SD) instead of hardcoded peer URLs
-- Push notifications support (store + sender) for long-running tasks
+- Wire `peerSkills` map from Agent Card health-check cache into routing rules (skills matching)
+- mDNS self-advertisement (make this gateway discoverable by other gateways)
+- SDK-native push notification integration (currently custom implementation with `pushNotifications: false`)
 
 ## License
 
