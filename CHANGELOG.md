@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-03-24
+
+### Added
+
+- Peer skills caching — health check probes extract skills from Agent Card and cache them in `PeerHealthManager`, enabling skills-based routing rule matching (cf3d038)
+- mDNS self-advertisement — publish PTR/SRV/TXT records on the local network so other A2A gateways can discover this instance automatically via DNS-SD; responds to queries, re-announces before TTL expiry, sends goodbye packet on shutdown (df98451)
+- New config section `advertise` with `enabled`, `serviceName`, and `ttl` options (disabled by default)
+
 ## [1.1.0] - 2026-03-23
 
 ### Added
@@ -89,6 +97,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Task lifecycle management (create, get, cancel)
 - English and Chinese README
 
+[1.2.0]: https://github.com/win4r/openclaw-a2a-gateway/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/win4r/openclaw-a2a-gateway/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/win4r/openclaw-a2a-gateway/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/win4r/openclaw-a2a-gateway/compare/v0.1.0...v1.0.0
