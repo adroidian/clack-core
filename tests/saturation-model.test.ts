@@ -58,6 +58,13 @@ describe("michaelisMentenDelay", () => {
     const delayHighKm = michaelisMentenDelay(0.5, 0.8, 1000);
     assert.ok(delayLowKm > delayHighKm);
   });
+
+  it("returns 0 for NaN/Infinity inputs", () => {
+    assert.equal(michaelisMentenDelay(NaN, 0.5, 1000), 0);
+    assert.equal(michaelisMentenDelay(0.5, NaN, 1000), 0);
+    assert.equal(michaelisMentenDelay(0.5, 0.5, Infinity), 0);
+    assert.equal(michaelisMentenDelay(Infinity, 0.5, 1000), 0);
+  });
 });
 
 // ---------------------------------------------------------------------------

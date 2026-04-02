@@ -84,6 +84,7 @@ export function michaelisMentenDelay(
   km: number,
   baseDelay: number,
 ): number {
+  if (!Number.isFinite(load) || !Number.isFinite(km) || !Number.isFinite(baseDelay)) return 0;
   if (load <= 0) return 0;
   if (km <= 0) return baseDelay; // infinite affinity → instant saturation
   return baseDelay * load / (km + load);

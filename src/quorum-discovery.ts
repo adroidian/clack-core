@@ -182,32 +182,38 @@ export class QuorumDiscoveryManager {
   private async tick(): Promise<void> {
     if (!this.running) return;
 
-    // Perform one discovery cycle
-    await this.dns.triggerRefresh();
+    try {
+      // Perform one discovery cycle
+      await this.dns.triggerRefresh();
 
-    // Evaluate density and apply hysteresis-based mode switching
-    const density = this.dns.getDiscoveredPeers().length;
-    const prevMode = this.mode;
+      // Evaluate density and apply hysteresis-based mode switching
+      const density = this.dns.getDiscoveredPeers().length;
+      const prevMode = this.mode;
 
-    if (this.mode === "explore" && density >= this.activateThreshold) {
-      this.mode = "stable";
-    } else if (this.mode === "stable" && density < this.deactivateThreshold) {
-      this.mode = "explore";
-    }
-    // Note: density between deactivateThreshold and activateThreshold
-    // does NOT trigger a switch — this is the hysteresis dead zone.
+      if (this.mode === "explore" && density >= this.activateThreshold) {
+        this.mode = "stable";
+      } else if (this.mode === "stable" && density < this.deactivateThreshold) {
+        this.mode = "explore";
+      }
+      // Note: density between deactivateThreshold and activateThreshold
+      // does NOT trigger a switch — this is the hysteresis dead zone.
 
-    if (this.mode !== prevMode) {
-      this.log("info", "quorum.mode-change", {
-        from: prevMode,
-        to: this.mode,
-        density,
-        intervalMs: this.getCurrentIntervalMs(),
+      if (this.mode !== prevMode) {
+        this.log("info", "quorum.mode-change", {
+          from: prevMode,
+          to: this.mode,
+          density,
+          intervalMs: this.getCurrentIntervalMs(),
+        });
+      }
+    } catch (err) {
+      this.log("warn", "quorum.tick-error", {
+        error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      // Always schedule next tick to keep the polling loop alive
+      this.scheduleNext(this.getCurrentIntervalMs());
     }
-
-    // Schedule next tick with mode-appropriate interval
-    this.scheduleNext(this.getCurrentIntervalMs());
   }
 }
 

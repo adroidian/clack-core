@@ -2,7 +2,7 @@
  * A2A Gateway Bio-Inspired Benchmark
  *
  * Compares legacy (bio features OFF) vs bio-inspired (features ON) across
- * 5 dimensions. Pure logic simulation — no Docker, no real network (except
+ * 6 dimensions. Pure logic simulation — no Docker, no real network (except
  * localhost webhook for Dimension 3).
  *
  * Run: node --import tsx --test tests/benchmark.test.ts
@@ -35,6 +35,12 @@ import {
   michaelisMentenDelay,
   computeSaturationDelay,
 } from "../src/saturation-model.js";
+import {
+  orderTransports,
+  adaptiveOrderTransports,
+  TransportStats,
+  type TransportEndpoint,
+} from "../src/transport-fallback.js";
 import type {
   PeerConfig,
   CircuitBreakerConfig,
@@ -58,6 +64,7 @@ const OUTPUT_PATH = path.join(
   process.env.HOME!,
   "Desktop",
   "A2A-仿生研究",
+  "研究文档",
   "06-benchmark-results.md",
 );
 
@@ -184,6 +191,41 @@ describe("Dimension 1: Hill Equation Routing Accuracy", () => {
 
   it("bio outperforms legacy in routing accuracy", () => {
     assert.ok(bioCorrect >= legacyCorrect, `Bio (${bioCorrect}) should be >= Legacy (${legacyCorrect})`);
+  });
+
+  it("routing latency comparison (1000 iterations)", () => {
+    const iterations = 1000;
+    const msg = { text: "Review this PR and fix the bug" };
+
+    // Legacy latency
+    const legacyTimes: number[] = [];
+    for (let i = 0; i < iterations; i++) {
+      const start = performance.now();
+      matchRule(rules, msg, peerSkills);
+      legacyTimes.push(performance.now() - start);
+    }
+
+    // Bio latency
+    const bioTimes: number[] = [];
+    for (let i = 0; i < iterations; i++) {
+      const start = performance.now();
+      matchAllRules(rules, msg, peerSkills, successRates, affinityConfig);
+      bioTimes.push(performance.now() - start);
+    }
+
+    legacyTimes.sort((a, b) => a - b);
+    bioTimes.sort((a, b) => a - b);
+
+    const legacyP50 = percentile(legacyTimes, 50);
+    const bioP50 = percentile(bioTimes, 50);
+    const legacyP99 = percentile(legacyTimes, 99);
+    const bioP99 = percentile(bioTimes, 99);
+
+    record("1. Hill Routing", "P50 Latency", legacyP50 * 1000, bioP50 * 1000, "μs");
+    record("1. Hill Routing", "P99 Latency", legacyP99 * 1000, bioP99 * 1000, "μs");
+
+    // Hill scoring should be < 1ms overhead even at P99
+    assert.ok(bioP99 < 1, `Bio P99 routing latency (${bioP99.toFixed(3)}ms) should be < 1ms`);
   });
 });
 
@@ -602,6 +644,110 @@ describe("Dimension 5: MM Soft Concurrency Smoothness", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dimension 6: Adaptive Transport Selection
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Dimension 6: Adaptive Transport Selection", () => {
+  const endpoints: TransportEndpoint[] = [
+    { url: "http://peer.local:18800/jsonrpc", transport: "JSONRPC" },
+    { url: "http://peer.local:18800/api", transport: "HTTP+JSON" },
+    { url: "grpc://peer.local:18801", transport: "GRPC" },
+  ];
+
+  it("legacy: static ordering ignores failure history", () => {
+    // Legacy always returns JSONRPC first regardless of failure history
+    const ordered = orderTransports(endpoints);
+    const firstChoices: string[] = [];
+
+    // Simulate 20 rounds — static ordering never changes
+    for (let round = 0; round < 20; round++) {
+      firstChoices.push(ordered[0].transport);
+    }
+
+    const uniqueFirstChoices = new Set(firstChoices).size;
+    record("6. Adaptive Transport", "Adaptation Events", 0, 0, "count");
+    record("6. Adaptive Transport", "Static Order Diversity", uniqueFirstChoices, 0, "count");
+  });
+
+  it("bio: adapts when primary transport degrades", () => {
+    const stats = new TransportStats(20, 1000);
+
+    // Phase A: JSONRPC works well initially (5 successes, low latency)
+    for (let i = 0; i < 5; i++) {
+      stats.record("JSONRPC", true, 50);
+      stats.record("HTTP+JSON", true, 80);
+      stats.record("GRPC", true, 120);
+    }
+
+    const initialOrder = adaptiveOrderTransports(endpoints, stats);
+    assert.equal(initialOrder[0].transport, "JSONRPC", "JSONRPC should be first initially");
+
+    // Phase B: JSONRPC starts failing (10 failures)
+    for (let i = 0; i < 10; i++) {
+      stats.record("JSONRPC", false, 5000);
+      stats.record("HTTP+JSON", true, 80);
+    }
+
+    const adaptedOrder = adaptiveOrderTransports(endpoints, stats);
+    assert.notEqual(adaptedOrder[0].transport, "JSONRPC", "JSONRPC should NOT be first after failures");
+
+    // Phase C: JSONRPC recovers
+    for (let i = 0; i < 15; i++) {
+      stats.record("JSONRPC", true, 60);
+    }
+
+    const recoveredOrder = adaptiveOrderTransports(endpoints, stats);
+
+    // Track adaptation events (changes in first-choice transport)
+    const phases = [initialOrder, adaptedOrder, recoveredOrder];
+    let adaptations = 0;
+    for (let i = 1; i < phases.length; i++) {
+      if (phases[i][0].transport !== phases[i - 1][0].transport) adaptations++;
+    }
+
+    // Update the adaptation count
+    const entry = results.find((r) => r.metric === "Adaptation Events");
+    if (entry) entry.bio = adaptations;
+
+    const diversityEntry = results.find((r) => r.metric === "Static Order Diversity");
+    if (diversityEntry) diversityEntry.bio = new Set(phases.map(p => p[0].transport)).size;
+
+    assert.ok(adaptations >= 1, `Should adapt at least once, got ${adaptations}`);
+  });
+
+  it("bio: score reflects success rate × latency", () => {
+    const stats = new TransportStats(10, 1000);
+
+    // Fast but unreliable transport
+    for (let i = 0; i < 10; i++) {
+      stats.record("FAST_FLAKY", i < 5, 30); // 50% success, 30ms
+    }
+
+    // Slow but reliable transport
+    for (let i = 0; i < 10; i++) {
+      stats.record("SLOW_RELIABLE", true, 800); // 100% success, 800ms
+    }
+
+    const fastScore = stats.getScore("FAST_FLAKY");
+    const slowScore = stats.getScore("SLOW_RELIABLE");
+
+    record("6. Adaptive Transport", "Flaky Transport Score", 1.0, fastScore, "score");
+    record("6. Adaptive Transport", "Reliable Transport Score", 1.0, slowScore, "score");
+
+    // Reliable should beat flaky despite higher latency
+    assert.ok(
+      slowScore > fastScore,
+      `Reliable (${slowScore.toFixed(3)}) should beat flaky (${fastScore.toFixed(3)})`,
+    );
+  });
+
+  it("bio outperforms legacy in transport adaptation", () => {
+    const entry = results.find((r) => r.metric === "Adaptation Events");
+    assert.ok(entry && entry.bio > entry.legacy);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Report Generation
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -647,6 +793,7 @@ after(() => {
     "3. Signal Decay": "Delivery Rate",
     "4. QS Discovery": "Total Queries (600s)",
     "5. MM Concurrency": "Backpressure Coverage",
+    "6. Adaptive Transport": "Adaptation Events",
   };
 
   for (const dim of dims) {
