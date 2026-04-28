@@ -376,11 +376,31 @@ export function buildApp(cfg, registry, deliveryLog) {
   // -----------------------------------------------------------------
   // GET /health
   // -----------------------------------------------------------------
+  // GET /health — liveness probe only. Always HTTP 200 while the process is up.
+  // Empty registry means 'starting', not 'unhealthy'. Use GET /ready for readiness.
   app.get('/health', (_req, res) => {
     const { total, stale } = registry.getStats();
     const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
-    const status = total === 0 ? 'unhealthy' : stale > 0 ? 'degraded' : 'ok';
+    const active = total - stale;
+    const status = active > 0 ? 'ok' : total > 0 ? 'degraded' : 'starting';
     res.json({ status, uptime_seconds: uptimeSeconds, registry_agents: total, registry_stale: stale, version: SHIM_VERSION });
+  });
+
+  // GET /ready — readiness probe. 503 until at least one active agent is registered.
+  // Kubernetes/systemd readiness checks, load-balancer health gates, and monitoring
+  // should use this endpoint — not /health — to determine mesh readiness.
+  app.get('/ready', (_req, res) => {
+    const { total, stale } = registry.getStats();
+    const active = total - stale;
+    if (active === 0) {
+      return res.status(503).json({
+        ready: false,
+        reason: total === 0 ? 'no agents registered' : 'all agents stale',
+        registry_agents: total,
+        registry_stale: stale,
+      });
+    }
+    return res.json({ ready: true, registry_agents: total, registry_active: active });
   });
 
   // -----------------------------------------------------------------
